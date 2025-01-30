@@ -151,15 +151,15 @@ typedef NS_ENUM(NSInteger, ScribbleAnimationMode) {
         [self setAnimationTimeInterval:1.0 / 30.0];
         
         // Initial config
-        _drawSpeed     = 100.0;
+        _drawSpeed     = 50.0;
         _rotationSpeed = 1.0;        // rotations per minute
-        _drawLength    = 12000.0;    // visible length
+        _drawLength    = 16000.0;    // visible length
         _rotation      = 0.0;
         _trimAmount    = 0.0;
-        _keepBehind    = 1.5 * (_drawLength * 10.0);
+        _keepBehind    = _drawLength;
         
         // pixelation factor
-        _scaleFactor   = 0.5;
+        _scaleFactor   = .5;
         
         // Organic path params (for smooth lines)
         _pathMinSegmentLength = 10.0;
@@ -174,11 +174,12 @@ typedef NS_ENUM(NSInteger, ScribbleAnimationMode) {
         //  1 => old random only
         //  2 => smooth only
         //  3 => mixed
-        _animationMode = ScribbleAnimationModeSmooth;  // example default
+        _animationMode = ScribbleAnimationModeMixed;  // example default
         
         // For mixed mode
-        _usingSmoothSegments = NO; // start in 'old' if in mode 3
-        _toggleCountdown = 0;      // or set to random frames
+        _usingSmoothSegments = YES; // start in 'old' if in mode 3
+        self.toggleCountdown = 180 + arc4random_uniform(120); // Start with 6-10 sec
+
     }
     return self;
 }
@@ -202,7 +203,7 @@ typedef NS_ENUM(NSInteger, ScribbleAnimationMode) {
     
     self.sphereCenterX = width  * 0.5;
     self.sphereCenterY = height * 0.5;
-    self.sphereRadius  = minDim * 0.67;
+    self.sphereRadius  = minDim * 0.65;
     
     [self.path removeAllObjects];
     [self.cumulativeDistances removeAllObjects];
@@ -254,13 +255,13 @@ typedef NS_ENUM(NSInteger, ScribbleAnimationMode) {
     // (If you want to literally replicate your earliest code, which used a bounding box,
     //  you can do that. For now, let's do "anywhere in the sphere".)
     
-    CGFloat x = (CGFloat)arc4random()/(CGFloat)UINT32_MAX * (self.sphereRadius*2)
-                + (self.sphereCenterX - self.sphereRadius);
-    CGFloat y = (CGFloat)arc4random()/(CGFloat)UINT32_MAX * (self.sphereRadius*2)
-                + (self.sphereCenterY - self.sphereRadius);
+    CGFloat x = (CGFloat)arc4random()/(CGFloat)UINT32_MAX * (self.sphereRadius * 1)
+                + (self.sphereCenterX - self.sphereRadius * 0.5);
+    CGFloat y = (CGFloat)arc4random()/(CGFloat)UINT32_MAX * (self.sphereRadius * 1)
+                + (self.sphereCenterY - self.sphereRadius * 0.5);
     // For 3D effect, Z in [-sphereRadius..sphereRadius]
-    CGFloat z = ((CGFloat)arc4random()/(CGFloat)UINT32_MAX * (self.sphereRadius*2))
-                - (self.sphereRadius);
+    CGFloat z = ((CGFloat)arc4random()/(CGFloat)UINT32_MAX * (self.sphereRadius * 1))
+                - (self.sphereRadius * 0.5);
     
     Point3D p = MakePoint3D(x, y, z);
     [self appendPoint:p];
@@ -270,10 +271,20 @@ typedef NS_ENUM(NSInteger, ScribbleAnimationMode) {
  * New logic: "Smooth lines" with boundary steering/clamping (Strategy #2).
  */
 - (void)addSmoothSegmentNEW {
-    // If fewer than 2 points, pick a random point in sphere
+    // If fewer than 2 points, seed with center + right-offset point
     if (self.path.count < 2) {
-        [self addRandomPointInSphere]; // the random-in-sphere from your code
-        return;
+        [self.path removeAllObjects];
+        [self.cumulativeDistances removeAllObjects];
+
+        // **First point: Exact center of the sphere**
+        Point3D centerPoint = MakePoint3D(self.sphereCenterX, self.sphereCenterY, 0);
+        [self appendPoint:centerPoint];
+
+        // **Second point: 10px to the right of the center**
+        Point3D rightPoint = MakePoint3D(self.sphereCenterX + 10, self.sphereCenterY, 0);
+        [self appendPoint:rightPoint];
+
+        return; // Exit early so we don't add a random point
     }
     
     // Exactly like your "smooth lines" method:
@@ -352,7 +363,6 @@ typedef NS_ENUM(NSInteger, ScribbleAnimationMode) {
     CGFloat candidateDist = distanceFromCenter(MakePoint3D(candidateX, candidateY, candidateZ),
                                                self.sphereCenterX, self.sphereCenterY);
     if (candidateDist > self.sphereRadius) {
-        CGFloat overshoot = candidateDist - self.sphereRadius;
         CGFloat scale = (self.sphereRadius - dist) / (candidateDist - dist);
         if (scale < 0.0 || scale > 1.0) {
             // fallback: place exactly on boundary
@@ -406,6 +416,17 @@ typedef NS_ENUM(NSInteger, ScribbleAnimationMode) {
     [self.cumulativeDistances addObject:@(newCumDist)];
 }
 
+- (void)toggleMixedMode {
+    // Flip between smooth and jagged
+    self.usingSmoothSegments = !self.usingSmoothSegments;
+    
+    // Set a new random toggle time (between 3-5 seconds at 30 FPS)
+    self.toggleCountdown = 180 + arc4random_uniform(120); // 90 to 150 frames (≈ 3-5 sec)
+    
+    // Debug log
+    NSLog(@"[DEBUG] Scribble Mode Toggled: %@", self.usingSmoothSegments ? @"Smooth" : @"Jagged");
+}
+
 #pragma mark - AnimateOneFrame
 
 - (void)animateOneFrame {
@@ -413,9 +434,11 @@ typedef NS_ENUM(NSInteger, ScribbleAnimationMode) {
     CGFloat rotationsPerSec = (self.rotationSpeed / 60.0);
     CGFloat dRotation = rotationsPerSec * (2.0 * M_PI) * (1.0 / 30.0);
     
-    // For "Mode 3 (Mixed)": occasionally toggle between old & smooth
+    // If "Mode 3 (Mixed)", count down and toggle at zero
     if (self.animationMode == ScribbleAnimationModeMixed) {
-        [self updateMixedModeToggle];
+        if (--self.toggleCountdown <= 0) {
+            [self toggleMixedMode];  // Switch between jagged & smooth
+        }
     }
     
     // Move trim forward
@@ -433,7 +456,7 @@ typedef NS_ENUM(NSInteger, ScribbleAnimationMode) {
     CGFloat pathEnd = (self.cumulativeDistances.count > 0)
                       ? self.cumulativeDistances.lastObject.doubleValue
                       : 0.0;
-    CGFloat neededEnd = self.trimAmount + (self.drawLength * 10.0);
+    CGFloat neededEnd = self.trimAmount;
     while (pathEnd < neededEnd) {
         [self addPathSegment];
         pathEnd = self.cumulativeDistances.lastObject.doubleValue;
@@ -447,6 +470,7 @@ typedef NS_ENUM(NSInteger, ScribbleAnimationMode) {
     
     [self setNeedsDisplay:YES];
 }
+
 
 /**
  * For Mixed mode: decide if we want to toggle from old -> smooth or smooth -> old.
@@ -673,7 +697,16 @@ typedef NS_ENUM(NSInteger, ScribbleAnimationMode) {
     
     if (displayPts.count < 2) return;
     
-    // 4) Build a path
+    // --- DEBUG LOG: total vs visible
+    NSLog(@"[DEBUG] Total path points: %lu, visible points: %lu, total path length: %.1f, trim range: %.1f..%.1f",
+          (unsigned long)self.path.count,
+          (unsigned long)displayPts.count,
+          totalLength,
+          startOffset,
+          endOffset);
+    // ---
+
+    // 4) Build and stroke the path
     NSBezierPath *bpath = [NSBezierPath bezierPath];
     bpath.lineWidth = 1.0;
     
@@ -710,6 +743,7 @@ typedef NS_ENUM(NSInteger, ScribbleAnimationMode) {
     [[NSColor whiteColor] setStroke];
     [bpath stroke];
 }
+
 
 /**
  * Interpolate a point at distance d using our cached cumulativeDistances
